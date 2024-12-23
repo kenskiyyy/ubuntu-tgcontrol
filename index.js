@@ -3,6 +3,8 @@ import { Telegraf, Markup } from 'telegraf';
 import { message } from 'telegraf/filters';
 import { exec } from 'child_process';
 import fs from 'fs';
+import os from 'os';
+import schedule from 'node-schedule';
 
 dotenv.config({path: './config.env'});
 
@@ -15,7 +17,7 @@ const CONFIG = {
 };
 
 function requireOwner(handler) {
-    return async (ctx) => {
+    return async (ctx) => {  
         if (ctx.from.id.toString() !== process.env.Me) return;
         try {
             await handler(ctx);
@@ -58,6 +60,15 @@ async function getPlayerInfo() {
     return { metadata, status, volume, artUrl };
 }
 
+async function getPlayerQueue() {
+    return new Promise((resolve, reject) => {
+        exec('playerctl metadata --format "{{ playerName }}\\n{{ artist }} - {{ title }}" --list-all', (error, stdout) => {
+            if (error) reject(error);
+            else resolve(stdout.trim().split('\n'));
+        });
+    });
+}
+
 const mediaKeyboard = {
     inline_keyboard: [
         [
@@ -69,6 +80,9 @@ const mediaKeyboard = {
             { text: '🔈 Тише', callback_data: 'volumedown' },
             { text: '🔊 Громче', callback_data: 'volumeup' },
             { text: '🔇 Без звука', callback_data: 'mute' }
+        ],
+        [
+            { text: '📋 Очередь', callback_data: 'queue' }
         ]
     ]
 };
@@ -561,18 +575,20 @@ bot.hears('📊 Информация о системе', async (ctx) => {
 
 bot.hears('⚡ Выключить систему', async (ctx) => {
     if (ctx.from.id.toString() !== process.env.Me) return;
-    try {
-        await ctx.reply('Вы��лючение компьютера...');
-        exec('sudo shutdown now', (error, stdout, stderr) => {
-            if (error) {
-                ctx.reply('Ошибка при выключении: ' + error.message + '\nПопробуйте добавить пользователя в sudoers или настроить shutdown без пароля');
-                return;
-            }
-        });
-    } catch (err) {
-        ctx.reply('Произошла ошибка при выполнении команды');
-        console.error(err);
-    }
+    await ctx.reply('Выберите действие:', {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '⚡ Выключить', callback_data: 'shutdown' },
+                    { text: '😴 Сон', callback_data: 'sleep' },
+                    { text: '❄️ Гибернация', callback_data: 'hibernate' }
+                ],
+                [
+                    { text: '❌ Отмена', callback_data: 'ignore' }
+                ]
+            ]
+        }
+    });
 });
 
 bot.action('shutdown', async (ctx) => {
@@ -630,3 +646,124 @@ try {
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
+
+async function getSystemStats() {
+    const cpuUsage = os.loadavg()[0];
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const memUsage = ((totalMem - freeMem) / totalMem * 100).toFixed(1);
+    
+    return {
+        cpu: cpuUsage.toFixed(1),
+        memory: memUsage,
+        uptime: os.uptime()
+    };
+}
+
+bot.command('stats', requireOwner(async (ctx) => {
+    const stats = await getSystemStats();
+    const message = `📊 System Statistics\n\n` +
+                   `CPU Load: ${stats.cpu}%\n` +
+                   `Memory Usage: ${stats.memory}%\n` +
+                   `Uptime: ${Math.floor(stats.uptime / 3600)}h ${Math.floor((stats.uptime % 3600) / 60)}m`;
+    
+    await ctx.reply(message);
+}));
+
+bot.action('queue', requireOwner(async (ctx) => {
+    try {
+        const queue = await getPlayerQueue();
+        const message = `🎵 Очередь воспроизведения:\n\n${queue.join('\n')}`;
+        await ctx.reply(message, { parse_mode: 'HTML' });
+        await ctx.answerCbQuery('Очередь получена');
+    } catch (error) {
+        console.error(error);
+        await ctx.answerCbQuery('Ошибка при получении очереди');
+    }
+}));
+
+bot.action('sleep', requireOwner(async (ctx) => {
+    try {
+        await ctx.editMessageText('Перевод системы в режим сна...');
+        await ctx.answerCbQuery('Режим сна...');
+        exec('systemctl suspend', (error) => {
+            if (error) {
+                ctx.reply('Ошибка при переходе в режим сна: ' + error.message);
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        await ctx.reply('Произошла ошибка');
+    }
+}));
+
+bot.action('hibernate', requireOwner(async (ctx) => {
+    try {
+        await ctx.editMessageText('Перевод системы в гибернацию...');
+        await ctx.answerCbQuery('Гибернация...');
+        exec('systemctl hibernate', (error) => {
+            if (error) {
+                ctx.reply('Ошибка при переходе в гибернацию: ' + error.message);
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        await ctx.reply('Произошла ошибка');
+    }
+}));
+
+function sendKeyPress(key) {
+    return new Promise((resolve, reject) => {
+        exec(`xdotool key ${key}`, (error) => {
+            if (error) reject(error);
+            else resolve();
+        });
+    });
+}
+
+const keyboardShortcuts = {
+    inline_keyboard: [
+        [
+            { text: '🔊', callback_data: 'key_volumeup' },
+            { text: '🔇', callback_data: 'key_mute' },
+            { text: '🔈', callback_data: 'key_volumedown' }
+        ],
+        [
+            { text: '⏮️', callback_data: 'key_previous' },
+            { text: '⏯️', callback_data: 'key_playpause' },
+            { text: '⏭️', callback_data: 'key_next' }
+        ]
+    ]
+};
+
+bot.command('shortcuts', requireOwner(async (ctx) => {
+    await ctx.reply('Keyboard Shortcuts:', {
+        reply_markup: keyboardShortcuts
+    });
+}));
+
+function scheduleAction(time, action) {
+    return schedule.scheduleJob(time, action);
+}
+
+bot.command('schedule', requireOwner(async (ctx) => {
+    const [cmd, action, time] = ctx.message.text.split(' ');
+    if (!action || !time) {
+        await ctx.reply('Usage: /schedule [shutdown|sleep] HH:mm');
+        return;
+    }
+
+    try {
+        scheduleAction(time, () => {
+            if (action === 'shutdown') {
+                exec('sudo shutdown now');
+            } else if (action === 'sleep') {
+                exec('systemctl suspend');
+            }
+        });
+        await ctx.reply(`Scheduled ${action} at ${time}`);
+    } catch (error) {
+        console.error(error);
+        await ctx.reply('Error scheduling action');
+    }
+}));

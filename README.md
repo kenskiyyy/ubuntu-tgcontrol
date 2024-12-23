@@ -17,7 +17,7 @@ cd ubuntu-tgcontrol
 
 ### Установка пакетов
 ```bash
-npm i dotenv telegraf
+npm i 
 ```
 
 ### Установка pm2
